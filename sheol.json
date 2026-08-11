@@ -26,5 +26,6 @@
   "cost": {
     "model": "paid",
     "detail": "cost is whatever the configured llm-adapter provider charges, this module adds nothing"
-  }
+  },
+  "example": "test-task.txt"
 }

@@ -332,57 +332,20 @@ fn truncate_log(s: &str, max: usize) -> String {
 }
 
 fn extract_inline_finish(text: &str) -> Option<String> {
-    let patterns = [
-        r#"finish\(result\s*[:=]\s*"([^"]*)""#,
-        r#"finish\(result\s*[:=]\s*'([^']*)'"#,
-        r#"finish\("([^"]*)"\)"#,
-        r#"finish\('([^']*)'\)"#,
-    ];
-    for pat in &patterns {
-        if let Some(captured) = simple_regex_capture(pat, text) {
-            let before = text.find("finish(").unwrap_or(0);
-            let cleaned = text[..before].trim_end().to_string();
-            if cleaned.is_empty() {
-                return Some(captured);
+    let lower = text.to_lowercase();
+    let cut_points = ["<tool_call>", "finish(", "finish (", "finish `{", "finish`("];
+    let mut earliest = text.len();
+    for cp in &cut_points {
+        if let Some(pos) = lower.find(cp) {
+            if pos < earliest {
+                earliest = pos;
             }
+        }
+    }
+    if earliest < text.len() {
+        let cleaned = text[..earliest].trim_end().trim_end_matches('`').to_string();
+        if !cleaned.is_empty() {
             return Some(cleaned);
-        }
-    }
-    None
-}
-
-fn simple_regex_capture(pattern: &str, text: &str) -> Option<String> {
-    let pat_lower = pattern.to_lowercase();
-    let text_lower = text.to_lowercase();
-    if pat_lower.contains(r#"result"#) {
-        let markers = [r#"result=""#, r#"result:""#, r#"result =""#, r#"result= ""#];
-        for marker in markers {
-            if let Some(pos) = text_lower.find(marker) {
-                let after = pos + marker.len();
-                if after >= text.len() {
-                    continue;
-                }
-                let remaining = &text[after..];
-                let end = remaining.find('"').or_else(|| remaining.find("'"));
-                if let Some(e) = end {
-                    return Some(remaining[..e].to_string());
-                }
-            }
-        }
-    }
-    if pat_lower.starts_with(r#"finish(""#) || pat_lower.starts_with(r#"finish('"#) {
-        if let Some(pos) = text_lower.find("finish(") {
-            let after = pos + 7;
-            if after >= text.len() {
-                return None;
-            }
-            let remaining = &text[after..];
-            let quote = remaining.chars().next()?;
-            if quote == '"' || quote == '\'' {
-                let inner = &remaining[1..];
-                let end = inner.find(quote)?;
-                return Some(inner[..end].to_string());
-            }
         }
     }
     None

@@ -2,8 +2,8 @@
   "schema": 1,
   "name": "agentic",
   "description": "runs a task to completion with an LLM and tools, live TUI showing turns and tool calls, security gates, interruptible state",
-  "input": "a task string via --task, plus flags for max turns and auto-approve; or use chat subcommand for live TUI",
-  "output": "the task result on stdout, or a json envelope with --json; the chat subcommand renders a live terminal interface",
+  "input": "a task string in a text file as the first argument",
+  "output": "the task result as json on stdout",
   "kind": "module",
   "tags": [
     "agent",
@@ -21,7 +21,7 @@
     "edersonff/llm-adapter"
   ],
   "entry": {
-    "cli": "bash run.sh run --task \"say hello\""
+    "cli": "bash try.sh"
   },
   "cost": {
     "model": "paid",

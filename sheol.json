@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "name": "agentic",
+  "description": "runs a task to completion with an LLM and tools, live TUI showing turns and tool calls, security gates, interruptible state",
+  "input": "a task string via --task, plus flags for max turns and auto-approve; or use chat subcommand for live TUI",
+  "output": "the task result on stdout, or a json envelope with --json; the chat subcommand renders a live terminal interface",
+  "kind": "module",
+  "tags": [
+    "agent",
+    "llm",
+    "tools",
+    "automation",
+    "rust"
+  ],
+  "license": "MIT",
+  "requires": [
+    "rust>=1.74",
+    "ripgrep"
+  ],
+  "needs": [
+    "edersonff/llm-adapter"
+  ],
+  "entry": {
+    "cli": "bash run.sh run --task \"say hello\""
+  },
+  "cost": {
+    "model": "paid",
+    "detail": "cost is whatever the configured llm-adapter provider charges, this module adds nothing"
+  }
+}

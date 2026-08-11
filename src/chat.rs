@@ -151,6 +151,18 @@ fn run_task_inner(
         }
 
         if tool_calls.is_empty() {
+            if let Some(text) = &assistant_content {
+                if let Some(cleaned) = extract_inline_finish(text) {
+                    save_state_now(&task_id, config, &messages, &todos, current_turn, &original_created)?;
+                    return Ok(Outcome {
+                        status: "completed".into(),
+                        turns: current_turn,
+                        todos: todos.clone(),
+                        final_answer: cleaned,
+                        task_id,
+                    });
+                }
+            }
             save_state_now(&task_id, config, &messages, &todos, current_turn, &original_created)?;
             return Ok(Outcome {
                 status: "completed".into(),
@@ -245,24 +257,25 @@ fn run_task_inner(
 
 fn system_prompt(workdir: &PathBuf) -> String {
     format!(
-        r#"you are a task agent. you complete tasks by using tools.
+        r#"you are a task agent. you complete tasks by calling tools.
 
-tools:
+tools (call these as function/tool calls, NEVER write them as text):
 - read(path): read a file's text contents
 - write(path, content): write text to a file (overwrites)
 - grep(pattern, path?): search file contents with regex, path defaults to current directory
 - search(query): search the web with ddgr
 - exec(command, args): run a command (no shell features; destructive commands blocked without --yes)
 - todo_update(items): set your todo list. items = [{{id, content, status}}]. status = pending|in_progress|completed|blocked
-- finish(result, blocked?): signal done. always call this when complete; do not just stop
+- finish(result, blocked?): signal done. MUST be called as a tool call, not written as text.
 
 rules:
 - read a file before writing it, so you know what you are changing
 - use todo_update for tasks with more than one step
-- call finish when done or blocked. if blocked, set blocked=true and explain why in result
+- call finish as a tool call when done or blocked. if blocked, set blocked=true and explain why in result
 - if a tool returns an error, read the "fix" field and try a different approach
 - do not repeat the same tool call that already failed
 - be concise. call tools to act, do not narrate what you will do
+- NEVER write tool names like finish() or read() as text. always use the tool call mechanism.
 
 working directory: {}"#,
         workdir.display()
@@ -307,8 +320,6 @@ fn save_state_now(
 fn log_turn(config: &Config, turn: u32, msg: &str) {
     if !config.json_output {
         eprintln!("[turn {}] {}", turn, msg);
-    } else {
-        eprintln!("[turn {}] {}", turn, msg);
     }
 }
 
@@ -318,6 +329,63 @@ fn truncate_log(s: &str, max: usize) -> String {
     } else {
         format!("{}...", &s[..max])
     }
+}
+
+fn extract_inline_finish(text: &str) -> Option<String> {
+    let patterns = [
+        r#"finish\(result\s*[:=]\s*"([^"]*)""#,
+        r#"finish\(result\s*[:=]\s*'([^']*)'"#,
+        r#"finish\("([^"]*)"\)"#,
+        r#"finish\('([^']*)'\)"#,
+    ];
+    for pat in &patterns {
+        if let Some(captured) = simple_regex_capture(pat, text) {
+            let before = text.find("finish(").unwrap_or(0);
+            let cleaned = text[..before].trim_end().to_string();
+            if cleaned.is_empty() {
+                return Some(captured);
+            }
+            return Some(cleaned);
+        }
+    }
+    None
+}
+
+fn simple_regex_capture(pattern: &str, text: &str) -> Option<String> {
+    let pat_lower = pattern.to_lowercase();
+    let text_lower = text.to_lowercase();
+    if pat_lower.contains(r#"result"#) {
+        let markers = [r#"result=""#, r#"result:""#, r#"result =""#, r#"result= ""#];
+        for marker in markers {
+            if let Some(pos) = text_lower.find(marker) {
+                let after = pos + marker.len();
+                if after >= text.len() {
+                    continue;
+                }
+                let remaining = &text[after..];
+                let end = remaining.find('"').or_else(|| remaining.find("'"));
+                if let Some(e) = end {
+                    return Some(remaining[..e].to_string());
+                }
+            }
+        }
+    }
+    if pat_lower.starts_with(r#"finish(""#) || pat_lower.starts_with(r#"finish('"#) {
+        if let Some(pos) = text_lower.find("finish(") {
+            let after = pos + 7;
+            if after >= text.len() {
+                return None;
+            }
+            let remaining = &text[after..];
+            let quote = remaining.chars().next()?;
+            if quote == '"' || quote == '\'' {
+                let inner = &remaining[1..];
+                let end = inner.find(quote)?;
+                return Some(inner[..end].to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn outcome_to_json(out: &Outcome) -> Value {

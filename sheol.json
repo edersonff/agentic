@@ -21,7 +21,7 @@
     "edersonff/llm-adapter"
   ],
   "entry": {
-    "cli": "bash try.sh"
+    "cli": "bash try.sh input.txt"
   },
   "cost": {
     "model": "paid",

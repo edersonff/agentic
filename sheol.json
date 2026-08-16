@@ -19,11 +19,15 @@
   ],
   "needs": "llm api keys in config.yaml (copy llm-adapter's config.yaml.template and fill one provider)",
   "entry": {
-    "cli": "bash try.sh input.txt"
+    "cli": "bash run.sh task.txt"
   },
   "cost": {
     "model": "paid",
     "detail": "cost is whatever the configured llm-adapter provider charges, this module adds nothing"
   },
-  "example": "test-task.txt"
+  "example": "test-task.txt",
+  "io": {
+    "input": "file",
+    "output": "stdout"
+  }
 }

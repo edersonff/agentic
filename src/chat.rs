@@ -151,6 +151,24 @@ fn run_task_inner(
         }
 
         if tool_calls.is_empty() {
+            let answer_is_empty = assistant_content
+                .as_deref()
+                .map(|text| text.trim().is_empty())
+                .unwrap_or(true);
+            if answer_is_empty {
+                let msg = format!(
+                    "the model returned an empty answer — provider throttle or overload; retry. task saved as {}. resume with: agentic resume {}",
+                    task_id, task_id
+                );
+                save_state_now(&task_id, config, &messages, &todos, current_turn, &original_created)?;
+                return Ok(Outcome {
+                    status: "error".into(),
+                    turns: current_turn,
+                    todos: todos.clone(),
+                    final_answer: msg,
+                    task_id,
+                });
+            }
             if let Some(text) = &assistant_content {
                 if let Some(cleaned) = extract_inline_finish(text) {
                     save_state_now(&task_id, config, &messages, &todos, current_turn, &original_created)?;
@@ -382,6 +400,97 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_then_finish_spans_two_turns() {
+        clear_interrupt();
+        let dir = tempdir().unwrap();
+        let probe = dir.path().join("probe.txt");
+        std::fs::write(&probe, "canary-7734").unwrap();
+        let probe_path = probe.to_str().unwrap().to_string();
+        let client = MockLlmClient::new(vec![
+            Ok(LlmResponse {
+                message: Message::assistant(
+                    None,
+                    Some(vec![ToolCall {
+                        id: "c1".into(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name: "read".into(),
+                            arguments: format!(r#"{{"path":"{}"}}"#, probe_path),
+                        },
+                    }]),
+                ),
+                finish_reason: "tool_calls".into(),
+            }),
+            Ok(LlmResponse {
+                message: Message::assistant(
+                    Some("done".into()),
+                    Some(vec![ToolCall {
+                        id: "c2".into(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name: "finish".into(),
+                            arguments: r#"{"result":"read the file"}"#.into(),
+                        },
+                    }]),
+                ),
+                finish_reason: "tool_calls".into(),
+            }),
+        ]);
+        let out = run_task(&client, &base_config(dir.path().to_path_buf(), dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(out.status, "completed");
+        assert_eq!(out.turns, 2, "tool turn + finish turn must count as 2 turns");
+        assert_eq!(out.final_answer, "read the file");
+    }
+
+    #[test]
+    fn unknown_tool_result_fed_back_then_finish() {
+        clear_interrupt();
+        let dir = tempdir().unwrap();
+        let client = MockLlmClient::new(vec![
+            Ok(LlmResponse {
+                message: Message::assistant(
+                    None,
+                    Some(vec![ToolCall {
+                        id: "c1".into(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name: "teleport".into(),
+                            arguments: r#"{"where":"moon"}"#.into(),
+                        },
+                    }]),
+                ),
+                finish_reason: "tool_calls".into(),
+            }),
+            Ok(LlmResponse {
+                message: Message::assistant(
+                    Some("recovered".into()),
+                    Some(vec![ToolCall {
+                        id: "c2".into(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name: "finish".into(),
+                            arguments: r#"{"result":"no such tool, explained to user"}"#.into(),
+                        },
+                    }]),
+                ),
+                finish_reason: "tool_calls".into(),
+            }),
+        ]);
+        let out = run_task(&client, &base_config(dir.path().to_path_buf(), dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(out.status, "completed");
+        assert_eq!(out.turns, 2);
+        assert!(out.final_answer.contains("no such tool"));
+        let second_call = client.calls.borrow()[1].clone();
+        let tool_msgs: Vec<&Message> = second_call.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(tool_msgs.len(), 1, "unknown tool result must be fed back to the model");
+        assert!(
+            tool_msgs[0].content.as_deref().unwrap_or("").contains("unknown tool: teleport"),
+            "fed-back result must name the unknown tool, got: {:?}",
+            tool_msgs[0].content
+        );
+    }
+
+    #[test]
     fn finish_tool_completes_task() {
         clear_interrupt();
         let dir = tempdir().unwrap();
@@ -439,6 +548,51 @@ mod tests {
         let out = run_task(&client, &base_config(dir.path().to_path_buf(), dir.path().to_path_buf()), None).unwrap();
         assert_eq!(out.status, "completed");
         assert_eq!(out.final_answer, "here is the answer");
+    }
+
+    #[test]
+    fn empty_reply_no_tool_calls_is_error_not_completed() {
+        clear_interrupt();
+        let dir = tempdir().unwrap();
+        let client = MockLlmClient::new(vec![Ok(LlmResponse {
+            message: Message::assistant(Some(String::new()), None),
+            finish_reason: "stop".into(),
+        })]);
+        let out = run_task(&client, &base_config(dir.path().to_path_buf(), dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(out.status, "error", "empty content with no tool calls must never report completed");
+        assert!(
+            out.final_answer.contains("empty answer"),
+            "the person must be told what happened, got: {}",
+            out.final_answer
+        );
+        assert!(out.final_answer.contains("resume"), "must name how to retry, got: {}", out.final_answer);
+        assert_ne!(out.final_answer, "", "completed-with-empty is the exact lie this test kills");
+    }
+
+    #[test]
+    fn whitespace_reply_no_tool_calls_is_error_not_completed() {
+        clear_interrupt();
+        let dir = tempdir().unwrap();
+        let client = MockLlmClient::new(vec![Ok(LlmResponse {
+            message: Message::assistant(Some("  \n\n  ".into()), None),
+            finish_reason: "stop".into(),
+        })]);
+        let out = run_task(&client, &base_config(dir.path().to_path_buf(), dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(out.status, "error", "whitespace-only content carries no answer and must not report completed");
+        assert!(out.final_answer.contains("empty answer"), "got: {}", out.final_answer);
+    }
+
+    #[test]
+    fn none_content_reply_no_tool_calls_is_error_not_completed() {
+        clear_interrupt();
+        let dir = tempdir().unwrap();
+        let client = MockLlmClient::new(vec![Ok(LlmResponse {
+            message: Message::assistant(None, None),
+            finish_reason: "stop".into(),
+        })]);
+        let out = run_task(&client, &base_config(dir.path().to_path_buf(), dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(out.status, "error", "null content with no tool calls must never report completed");
+        assert!(out.final_answer.contains("empty answer"), "got: {}", out.final_answer);
     }
 
     #[test]
